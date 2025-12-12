@@ -1,10 +1,12 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import faiss
 import numpy as np
 import pickle
 import requests
 
 app = Flask(__name__)
+CORS(app)   # 🔥 Přidá plnou podporu CORS — bez toho frontend NEBUDE fungovat
 
 EMBED_URL = "http://127.0.0.1:9999/v1/embeddings"
 MODEL = "text-embedding-nomic-embed-text-v1.5"

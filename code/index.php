@@ -10,8 +10,8 @@
 
 <h1>LM Helper – IT Outsourcing AI</h1>
 
-<form method="POST" action="call_llm.php" id="promptForm">
-    <textarea name="prompt" placeholder="Zadej problém nebo dotaz..." required></textarea>
+<form id="promptForm">
+    <textarea id="prompt" placeholder="Zadej problém nebo dotaz..." required></textarea>
     <button type="submit">Odeslat</button>
 </form>
 
@@ -21,15 +21,35 @@
 document.getElementById("promptForm").addEventListener("submit", async function(e) {
     e.preventDefault();
 
-    const formData = new FormData(this);
+    const query = document.getElementById("prompt").value.trim();
 
-    const response = await fetch("call_llm.php", {
-        method: "POST",
-        body: formData
-    });
+    if (!query) {
+        alert("Vyplň dotaz!");
+        return;
+    }
 
-    const data = await response.json();
-    document.getElementById("response").innerText = JSON.stringify(data, null, 2);
+    try {
+        const response = await fetch("http://127.0.0.1:5001/search", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            mode: "cors",
+            body: JSON.stringify({ query: query })
+        });
+
+        if (!response.ok) {
+            document.getElementById("response").innerText =
+                "Chyba serveru: " + response.status;
+            return;
+        }
+
+        const data = await response.json();
+        document.getElementById("response").innerText = JSON.stringify(data, null, 2);
+
+    } catch (err) {
+        document.getElementById("response").innerText = "Chyba spojení: " + err;
+    }
 });
 </script>
 

@@ -29,7 +29,7 @@ document.getElementById("promptForm").addEventListener("submit", async function(
     }
 
     try {
-        const response = await fetch("http://127.0.0.1:5001/search", {
+        const response = await fetch("http://127.0.0.1:5001/solve", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"

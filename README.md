@@ -153,10 +153,12 @@ přidat "Learning mode": systém se učí z nových tiketů
 
 🤝 Autoři
 
-Ty — IT systémový inženýr se 30+ lety praxe
+Antonín Ečer — IT systémový inženýr se 30+ lety praxe
 
 AI — pomoc s architekturou a implementací
 
-✔️ Licence
+Licence
 
-MIT License (doplním na přání)
+Tento projekt je určen výhradně pro soukromé použití po předchozí domluvě s autorem.
+Jakékoliv další šíření, komerční využití nebo úpravy k dalšímu publikování jsou možné pouze se souhlasem autora.
+

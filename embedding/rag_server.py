@@ -4,37 +4,42 @@ import faiss
 import numpy as np
 import pickle
 import requests
+import time
 
 app = Flask(__name__)
 CORS(app)
 
-# --- CONFIG ---
+# --- CONFIG --------------------------------------------------------------
+
 EMBED_URL = "http://127.0.0.1:9999/v1/embeddings"
-MODEL_EMB = "text-embedding-nomic-embed-text-v1.5"
-MODEL_LLM = "qwen2.5-7b-instruct-mlx"
+CHAT_URL  = "http://127.0.0.1:9999/v1/chat/completions"
+
+EMBED_MODEL = "text-embedding-nomic-embed-text-v1.5"
+LLM_MODEL   = "qwen2.5-7b-instruct-mlx"
+
+ALLOWED_LANGS = ["en", "cz", "de", "pl", "it"]
 
 INDEX = "../vectordb/faiss.index"
 META = "../vectordb/meta.pkl"
 
-# --- LOAD INDEX ---
+# --- LOAD VECTOR INDEX ---------------------------------------------------
+
 index = faiss.read_index(INDEX)
 
 with open(META, "rb") as f:
     metadata = pickle.load(f)
 
+# --- HELPERS -------------------------------------------------------------
 
-# ---- EMBEDDING FUNCTION ----
 def embed(text):
     r = requests.post(EMBED_URL, json={
-        "model": MODEL_EMB,
+        "model": EMBED_MODEL,
         "input": text
     }).json()
-
     return np.array(r["data"][0]["embedding"], dtype="float32").reshape(1, -1)
 
 
-# ---- VECTOR SEARCH ----
-def search(query, k=3):
+def search_similar(query, k=3):
     vec = embed(query)
     distances, indices = index.search(vec, k)
 
@@ -48,59 +53,97 @@ def search(query, k=3):
             "analysis": row["analysis"],
             "solution": row["solution"]
         })
-
     return results
 
 
-# ---- ENDPOINT: SEARCH ----
+def ask_llm(context, query, lang="en"):
+    """Generate short, structured, clean answer."""
+    
+    # LANGUAGE TUNING
+    lang_map = {
+        "en": "Write answer in English. Short, precise, bullet points.",
+        "cz": "Odpověz česky. Stručně, jasné kroky, technicky.",
+        "de": "Antwort auf Deutsch. Kurz und technisch.",
+        "pl": "Odpowiedz po polsku. Krótko i technicznie.",
+        "it": "Rispondi in italiano. Breve e tecnico."
+    }
+
+    sys_prompt = f"""
+You are an IT troubleshooting assistant.  
+Your task is to produce short, concise, highly actionable steps.
+Avoid long essays. Respond with numbered bullet points.  
+{lang_map.get(lang, lang_map["en"])}
+""".strip()
+
+    user_prompt = f"""
+User problem: {query}
+
+Relevant historical cases:
+{context}
+
+Provide a short root cause analysis + recommended fix steps.
+""".strip()
+
+    start = time.time()
+
+    r = requests.post(CHAT_URL, json={
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.2,
+        "max_tokens": 350
+    }).json()
+
+    end = time.time()
+
+    return {
+        "answer": r["choices"][0]["message"]["content"],
+        "response_time_seconds": round(end - start, 2)
+    }
+
+
+# --- API ENDPOINTS -------------------------------------------------------
+
 @app.route("/search", methods=["POST"])
 def handle_search():
     data = request.json
     query = data.get("query", "")
-    return jsonify(search(query, k=3))
+    lang  = data.get("lang", "en").lower()
+
+    if lang not in ALLOWED_LANGS:
+        lang = "en"
+
+    results = search_similar(query, k=3)
+    return jsonify(results)
 
 
-# ---- ENDPOINT: SOLVE (LLM + RAG) ----
 @app.route("/solve", methods=["POST"])
 def handle_solve():
     data = request.json
     query = data.get("query", "")
+    lang  = data.get("lang", "en").lower()
 
-    rag_hits = search(query, k=3)
+    if lang not in ALLOWED_LANGS:
+        lang = "en"
 
-    context_text = "\n\n".join(
-        f"Problem: {r['problem']}\nSymptoms: {r['symptoms']}\nAnalysis: {r['analysis']}\nSolution: {r['solution']}"
-        for r in rag_hits
-    )
+    similar = search_similar(query, k=3)
 
-    prompt = f"""
-Uživatel hlásí problém:
+    context_text = "\n\n".join([
+        f"- Problem: {x['problem']}\n  Symptoms: {x['symptoms']}\n  Solution: {x['solution']}"
+        for x in similar
+    ])
 
-"{query}"
-
-Na základě podobných historických případů:
-
-{context_text}
-
-Navrhni finální analýzu a doporuč mi přesný postup, co má technik udělat.
-"""
-
-    llm_resp = requests.post(
-        "http://127.0.0.1:9999/v1/chat/completions",
-        json={
-            "model": MODEL_LLM,
-            "messages": [
-                {"role": "system", "content": "Jsi zkušený IT technik a síťař."},
-                {"role": "user", "content": prompt}
-            ]
-        }
-    ).json()
+    llm_result = ask_llm(context_text, query, lang)
 
     return jsonify({
-        "matches": rag_hits,
-        "final_answer": llm_resp["choices"][0]["message"]["content"]
+        "llm_answer": llm_result["answer"],
+        "similar_cases": similar,
+        "response_time": llm_result["response_time_seconds"]
     })
 
 
-# ---- START SERVER ----
+# --- START SERVER --------------------------------------------------------
+
 app.run(host="127.0.0.1", port=5001)

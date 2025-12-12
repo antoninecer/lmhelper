@@ -31,3 +31,60 @@ button {
     padding: 20px;
     border: 1px solid #444;
 }
+
+body {
+    font-family: Arial, sans-serif;
+    max-width: 900px;
+    margin: 40px auto;
+    background: #f4f4f4;
+    padding: 20px;
+    border-radius: 12px;
+}
+
+h1 {
+    margin-bottom: 10px;
+}
+
+textarea {
+    width: 100%;
+    height: 120px;
+    padding: 12px;
+    font-size: 15px;
+    margin-bottom: 12px;
+}
+
+select {
+    padding: 6px;
+    font-size: 15px;
+}
+
+button {
+    padding: 10px 20px;
+    font-size: 16px;
+    margin-top: 10px;
+    cursor: pointer;
+}
+
+#response {
+    margin-top: 25px;
+    padding: 15px;
+    background: #fff;
+    border-radius: 10px;
+    white-space: pre-wrap;
+    font-family: monospace;
+}
+
+#response {
+    background: #1e1e1e;       /* tmavé pozadí */
+    color: #e8e8e8;            /* světlý text */
+    padding: 20px;
+    margin-top: 20px;
+    border-radius: 6px;
+    white-space: pre-wrap;     /* zachová formátování */
+    font-family: Consolas, monospace;
+    font-size: 14px;
+    overflow-y: auto;
+    max-height: 500px;         /* scroll, když je odpověď dlouhá */
+    border: 1px solid #333;
+}
+

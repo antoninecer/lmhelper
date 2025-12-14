@@ -51,6 +51,7 @@ textarea {
     padding: 12px;
     font-size: 15px;
     margin-bottom: 12px;
+    box-sizing: border-box;
 }
 
 select {

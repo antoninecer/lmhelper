@@ -57,7 +57,7 @@ def embed(text):
     ).reshape(1, -1)
 
 
-def search_similar(query, k=2):
+def search_similar(query, k=5):
     vec = embed(query)
     distances, indices = index.search(vec, k)
 
@@ -74,10 +74,22 @@ def search_similar(query, k=2):
     return results
 
 
+def deduplicate(results, limit=3):
+    seen = set()
+    unique = []
+    for r in results:
+        if r["problem"] not in seen:
+            seen.add(r["problem"])
+            unique.append(r)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
 def ask_llm(context, query, lang="en"):
     lang_map = {
-        "en": "Write answer in English. Short, precise, bullet points.",
-        "cz": "Odpověz česky. Stručně, jasné kroky, technicky.",
+        "en": "Write answer in English. Short, technical, operational.",
+        "cz": "Odpověz česky. Stručně, technicky, provozní kroky.",
         "de": "Antwort auf Deutsch. Kurz und technisch.",
         "pl": "Odpowiedz po polsku. Krótko i technicznie.",
         "it": "Rispondi in italiano. Breve e tecnico."
@@ -85,18 +97,29 @@ def ask_llm(context, query, lang="en"):
 
     sys_prompt = f"""
 You are an IT troubleshooting assistant.
-Your task is to produce short, concise, highly actionable steps.
-Avoid long essays. Respond with numbered bullet points.
+
+Your task is to produce short, highly actionable runbook-style steps.
+Respond with numbered bullet points.
+
+FORMAT RULES:
+- Commands must be inline, prefixed with `$`
+- Do NOT use Markdown code blocks or ``` formatting
+- Prefer real Linux/infra commands (lsof, df, systemctl, kubectl)
+- Do NOT invent fictional tools
+- Keep explanations minimal
+- Mark disruptive actions clearly
+
 {lang_map.get(lang, lang_map["en"])}
 """.strip()
 
     user_prompt = f"""
-User problem: {query}
+User problem:
+{query}
 
 Relevant historical cases:
 {context}
 
-Provide a short root cause analysis + recommended fix steps.
+Provide root cause + recommended fix steps.
 """.strip()
 
     start = time.time()
@@ -108,7 +131,7 @@ Provide a short root cause analysis + recommended fix steps.
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.2,
-        "max_tokens": 180
+        "max_tokens": 200
     }).json()
 
     end = time.time()
@@ -129,17 +152,15 @@ def handle_search():
     if lang not in ALLOWED_LANGS:
         lang = "en"
 
-    results = search_similar(query, k=3)
+    results = deduplicate(search_similar(query))
 
     log_interaction({
         "mode": "search",
         "query": query,
         "lang": lang,
         "results": [
-            {
-                "problem": r["problem"],
-                "distance": r["distance"]
-            } for r in results
+            {"problem": r["problem"], "distance": r["distance"]}
+            for r in results
         ]
     })
 
@@ -157,16 +178,17 @@ def handle_solve():
     if lang not in ALLOWED_LANGS:
         lang = "en"
 
-    similar = search_similar(query, k=3)
+    similar_raw = search_similar(query)
+    similar = deduplicate(similar_raw)
 
     context_text = "\n\n".join([
         f"- Problem: {x['problem']}\n"
+        f"  Symptoms: {x['symptoms']}\n"
         f"  Solution: {x['solution']}"
         for x in similar
     ])
 
     llm_result = ask_llm(context_text, query, lang)
-
     total_time = round(time.time() - start_total, 2)
 
     log_interaction({
@@ -174,10 +196,8 @@ def handle_solve():
         "query": query,
         "lang": lang,
         "similar_cases": [
-            {
-                "problem": x["problem"],
-                "distance": x["distance"]
-            } for x in similar
+            {"problem": x["problem"], "distance": x["distance"]}
+            for x in similar
         ],
         "answer": llm_result["answer"],
         "llm_time": llm_result["response_time_seconds"],

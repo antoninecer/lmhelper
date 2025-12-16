@@ -151,6 +151,177 @@ přidat OAuth2 / API klíče
 
 přidat "Learning mode": systém se učí z nových tiketů
 
+🔌 Integrace se Zammad (Helpdesk)
+
+LM Helper lze přímo napojit na Zammad Helpdesk a automaticky:
+
+analyzovat nově vytvořené nebo otevřené tickety
+
+vyhledat podobné historické incidenty ve vektorové databázi
+
+vygenerovat návrh řešení pomocí lokálního LLM
+
+vložit odpověď zpět do ticketu jako interní poznámku
+
+Integrace probíhá pomocí Zammad Webhooku → Flask endpoint /zammad.
+
+🧩 Jak integrace funguje
+
+Zákazník nebo uživatel vytvoří ticket v Zammadu
+
+Zammad pošle webhook (JSON payload) na:
+
+http://<LM_HELPER_HOST>:5001/zammad
+
+
+LM Helper:
+
+vezme title + první zprávu ticketu
+
+provede RAG vyhledávání ve FAISS
+
+zavolá lokální LLM
+
+vygeneruje technický návrh řešení
+
+Výsledek se zapíše zpět do ticketu jako Internal Note
+
+⚙️ Nastavení Zammad (krok za krokem)
+1️⃣ Vytvoření API tokenu
+
+V Zammadu:
+
+Settings → Security → Personal Access Tokens
+
+
+Name: lmhelper
+
+Permissions (minimální):
+
+ticket.agent
+
+ticket.article
+
+ticket.read
+
+Expiration: dle potřeby (např. 1 rok)
+
+➡️ Token si bezpečně ulož (zobrazí se jen jednou).
+
+2️⃣ Vytvoření Webhooku
+Settings → System → Webhooks → New
+
+
+Základní nastavení:
+
+Name: LM Helper
+
+Endpoint URL:
+
+http://127.0.0.1:5001/zammad
+
+
+(pro lokální běh; v produkci nahraď IP / hostname)
+
+Request method: POST
+
+Payload format: JSON
+
+SSL verification: dle prostředí (lokálně lze vypnout)
+
+3️⃣ Trigger (kdy se webhook spustí)
+
+Doporučené nastavení triggeru:
+
+Object: Ticket
+
+Event: Create nebo Update
+
+Podmínka:
+
+State is new nebo open
+
+Action:
+
+Execute Webhook → LM Helper
+
+⚠️ Doporučení:
+Pro první testy používej state = new, ať se webhook nespouští opakovaně.
+
+🔐 Konfigurace .env
+
+LM Helper NEUKLÁDÁ citlivé údaje do kódu.
+Používá se soubor .env (není součástí Git repozitáře).
+
+📄 .env (příklad)
+ZAMMAD_URL=http://127.0.0.1:8080
+ZAMMAD_TOKEN=PASTE_YOUR_PERSONAL_ACCESS_TOKEN_HERE
+
+
+ZAMMAD_URL
+URL, kde běží Zammad (Docker / VM / server)
+
+ZAMMAD_TOKEN
+Personal Access Token vytvořený v Zammadu
+
+❗ .env přidej do .gitignore
+
+🧪 Test webhooku (ručně)
+
+Pro ověření funkčnosti lze webhook simulovat ručně:
+
+curl -X POST http://127.0.0.1:5001/zammad \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ticket": {
+      "id": 1,
+      "title": "Disk full on production server"
+    },
+    "article": {
+      "body": "df -h shows 100% usage"
+    }
+  }'
+
+
+Pokud je vše správně:
+
+RAG server vypíše zpracování v konzoli
+
+do ticketu se zapíše Internal Note s návrhem řešení
+
+interakce se uloží do logs/rag.log.jsonl
+
+📝 Logování
+
+Každá interakce (search / solve / zammad) se ukládá do:
+
+logs/rag.log.jsonl
+
+
+Záznamy obsahují například:
+
+typ operace
+
+dotaz / preview ticketu
+
+nalezené podobné incidenty
+
+odpověď LLM
+
+čas odezvy
+
+použitý model
+
+Logy lze později využít pro:
+
+audit
+
+ladění
+
+trénink další verze modelu
+
+budoucí „learning mode“
+
 🤝 Autoři
 
 Antonín Ečer — IT systémový inženýr se 30+ lety praxe

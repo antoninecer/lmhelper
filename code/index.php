@@ -42,6 +42,31 @@
 <div id="response"></div>
 
 <script>
+function fmtDist(d) {
+    if (d === undefined || d === null || Number.isNaN(Number(d))) return "n/a";
+    return Number(d).toFixed(3);
+}
+
+function renderSimilarCases(similarCases) {
+    if (!Array.isArray(similarCases) || similarCases.length === 0) {
+        return "";
+    }
+
+    let out = "\n=== SIMILAR CASES ===\n";
+    similarCases.forEach((c, i) => {
+        const id = (c && c.id !== undefined && c.id !== null) ? c.id : "n/a";
+        const dist = fmtDist(c?.distance);
+        const label = c?.distance_label ? `, ${c.distance_label}` : "";
+
+        out += `\n#${i + 1} (ID ${id}, dist ${dist}${label})\n`;
+        out += `Problem: ${c?.problem || ""}\n`;
+        if (c?.symptoms) out += `Symptoms: ${c.symptoms}\n`;
+        if (c?.solution) out += `Solution: ${c.solution}\n`;
+    });
+
+    return out;
+}
+
 document.getElementById("promptForm").addEventListener("submit", async function(e) {
     e.preventDefault();
 
@@ -54,9 +79,12 @@ document.getElementById("promptForm").addEventListener("submit", async function(
         return;
     }
 
-    let endpoint = (mode === "solve")
+    const endpoint = (mode === "solve")
         ? "http://127.0.0.1:5001/solve"
         : "http://127.0.0.1:5001/search";
+
+    const respBox = document.getElementById("response");
+    respBox.innerText = "Working...";
 
     try {
         const response = await fetch(endpoint, {
@@ -65,39 +93,50 @@ document.getElementById("promptForm").addEventListener("submit", async function(
             body: JSON.stringify({ query: query, lang: lang })
         });
 
-        const data = await response.json();
+        if (!response.ok) {
+            const t = await response.text();
+            respBox.innerText = `Backend error: HTTP ${response.status}\n${t}`;
+            return;
+        }
 
+        const data = await response.json();
         let formatted = "";
 
         if (mode === "solve") {
             formatted += "=== FINAL ANSWER ===\n\n";
-            formatted += data.llm_answer + "\n\n";
-            formatted += "=== SIMILAR CASES ===\n";
+            formatted += (data?.llm_answer || "(no answer)") + "\n\n";
 
-            data.similar_cases.forEach((c, i) => {
-                formatted += `\n#${i + 1} (${c.distance.toFixed(3)})\n`;
-                formatted += `Problem: ${c.problem}\n`;
-                formatted += `Symptoms: ${c.symptoms}\n`;
-                formatted += `Solution: ${c.solution}\n`;
-            });
+            formatted += renderSimilarCases(data?.similar_cases);
 
-            formatted += `\nGenerated in: ${data.response_time}s\n`;
+            const rt = (data?.response_time !== undefined) ? data.response_time : "n/a";
+            const tt = (data?.total_time !== undefined) ? data.total_time : "n/a";
+            formatted += `\nGenerated in: ${rt}s (total ${tt}s)\n`;
+
         } else {
             formatted += "=== SEARCH RESULTS ===\n";
 
-            data.forEach((c, i) => {
-                formatted += `\n#${i + 1} (${c.distance.toFixed(3)})\n`;
-                formatted += `Problem: ${c.problem}\n`;
-                formatted += `Symptoms: ${c.symptoms}\n`;
-                formatted += `Solution: ${c.solution}\n`;
-            });
+            // /search vrací přímo pole
+            const results = Array.isArray(data) ? data : [];
+            if (results.length === 0) {
+                formatted += "\n(no matches under threshold)\n";
+            } else {
+                results.forEach((c, i) => {
+                    const id = (c && c.id !== undefined && c.id !== null) ? c.id : "n/a";
+                    const dist = fmtDist(c?.distance);
+                    const label = c?.distance_label ? `, ${c.distance_label}` : "";
+
+                    formatted += `\n#${i + 1} (ID ${id}, dist ${dist}${label})\n`;
+                    formatted += `Problem: ${c?.problem || ""}\n`;
+                    if (c?.symptoms) formatted += `Symptoms: ${c.symptoms}\n`;
+                    if (c?.solution) formatted += `Solution: ${c.solution}\n`;
+                });
+            }
         }
 
-        document.getElementById("response").innerText = formatted;
+        respBox.innerText = formatted;
 
     } catch (err) {
-        document.getElementById("response").innerText =
-            "Connection error or backend is not running.";
+        respBox.innerText = "Connection error or backend is not running.";
     }
 });
 </script>

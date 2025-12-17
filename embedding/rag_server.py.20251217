@@ -6,7 +6,6 @@ import pickle
 import requests
 import time
 import json
-import re
 import os
 from datetime import datetime
 from dotenv import load_dotenv
@@ -81,23 +80,6 @@ with open(META, "rb") as f:
 # ----------------------------------------------------------------------
 # HELPERS
 # ----------------------------------------------------------------------
-
-
-def normalize_numbered_steps(text: str) -> str:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    steps = []
-    for l in lines:
-        m = re.match(r"^\s*\d+\.\s*(.*)$", l)
-        if not m:
-            continue
-        body = m.group(1).strip()
-        # když je to jen příkaz, přilep ho k předchozímu kroku
-        if body.startswith("$") and steps:
-            steps[-1] = steps[-1].rstrip() + " " + body
-        else:
-            steps.append(body)
-
-    return "\n".join(f"{i}. {s}" for i, s in enumerate(steps, start=1))
 
 def filter_similar(similar):
     similar = sorted(similar, key=lambda x: x["distance"])
@@ -206,19 +188,21 @@ def distance_label(dist: float, lang: str = "en") -> str:
 
 
 def enrich_similar_cases(similar_cases, lang: str):
-    for i, x in enumerate(similar_cases, start=1):
+    """
+    Malý normalizační krok:
+    - filtr šumu
+    - přidá label
+    - přidá aliasy case_id/label + rank (kvůli frontendům)
+    """
+    filtered = [x for x in similar_cases if x["distance"] <= SIMILAR_MAX_DIST]
+    for i, x in enumerate(filtered, start=1):
         x["distance_label"] = distance_label(x["distance"], lang)
+        # aliasy aby se to líp rendrovalo i když někdo čeká jiné názvy
         x["case_id"] = x["id"]
         x["label"] = x["distance_label"]
         x["rank"] = i
-    return similar_cases
+    return filtered
 
-def get_similar_cases(query: str, lang: str, k: int, dedup_limit: int = 3):
-    raw = search_similar(query, k=k)          # vrací v pořadí FAISS (většinou už best-first)
-    raw = filter_similar(raw)                 # seřadí + ořízne podle SIMILAR_MAX_DIST
-    raw = deduplicate(raw, limit=dedup_limit) # zachová best-first
-    raw = enrich_similar_cases(raw, lang)     # rank sedí
-    return raw
 
 def build_context_text(similar_cases) -> str:
     # Kontext pro LLM – jen “Similar incidents”
@@ -253,73 +237,46 @@ def ask_llm(context: str, query: str, lang: str = "en"):
         "pl": "Odpowiedz po polsku. Krótko i technicznie.",
         "it": "Rispondi in italiano. Breve e tecnico."
     }
-    lang_instruction = lang_map.get(lang, lang_map["en"])
 
-    # ---- LLM params z .env ----
-    temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
-    max_tokens  = int(os.getenv("LLM_MAX_TOKENS", "220"))
-    timeout_sec = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+    sys_prompt = f"""
+You are an IT operations troubleshooting assistant.
 
-    # ---- sys_prompt z .env (varianta A: \n + {lang_instruction}) ----
-    sys_tmpl = (os.getenv("LLM_SYS_PROMPT", "") or "").strip()
-    if not sys_tmpl:
-        # fallback, kdyby nebyl .env
-        sys_tmpl = (
-            "You are an IT operations troubleshooting assistant.\n\n"
-            "Your task is to produce short, highly actionable, runbook-style remediation steps.\n\n"
-            "STRICT OUTPUT RULES:\n"
-            "- Output MUST contain numbered steps only (each line starts with \"1.\", \"2.\", ...)\n"
-            "- Each step must be on its own line (newline-separated)\n"
-            "- Do NOT output any standalone summary lines, headers, or sections\n"
-            "- Commands must be inline and prefixed with `$`\n"
-            "- Do NOT use markdown, code blocks, or ``` formatting\n"
-            "- Prefer real Linux / infra commands\n"
-            "- Do NOT invent fictional tools or commands\n"
-            "- Keep explanations minimal and technical\n"
-            "- Clearly mark disruptive actions (restart, kill, delete)\n"
-            "{lang_instruction}"
-        )
+Your task is to produce short, highly actionable, runbook-style remediation steps.
 
-    # z .env dostaneš \n jako text -> převést na reálné nové řádky
-    sys_tmpl = sys_tmpl.replace("\\n", "\n")
+STRICT OUTPUT RULES:
+- Output MUST contain numbered steps only (each line starts with "1.", "2.", ...)
+- Each step must be on its own line (newline-separated)
+- Do NOT output any standalone summary lines, headers, or sections
+- Commands must be inline and prefixed with `$`
+- Do NOT use markdown, code blocks, or ``` formatting
+- Prefer real Linux / infra commands
+- Do NOT invent fictional tools or commands
+- Keep explanations minimal and technical
+- Clearly mark disruptive actions (restart, kill, delete)
+{lang_map.get(lang, lang_map["en"])}
+""".strip()
 
-    # bezpečně dosadit jen pokud tam placeholder je
-    if "{lang_instruction}" in sys_tmpl:
-        sys_prompt = sys_tmpl.format(lang_instruction=lang_instruction).strip()
-    else:
-        sys_prompt = (sys_tmpl + "\n" + lang_instruction).strip()
+    user_prompt = f"""
+User problem:
+{query}
 
-    # ---- user prompt template volitelně z .env ----
-    user_tmpl = (os.getenv("LLM_USER_PROMPT", "") or "").strip()
-    if not user_tmpl:
-        user_tmpl = (
-            "User problem:\n{query}\n\n"
-            "Similar historical incidents (if any):\n{context}\n\n"
-            "Provide root cause + recommended fix steps."
-        )
-    user_tmpl = user_tmpl.replace("\\n", "\n")
+Similar historical incidents (if any):
+{context}
 
-    # stejně bezpečně jako u sys_prompt
-    if "{query}" in user_tmpl or "{context}" in user_tmpl:
-        user_prompt = user_tmpl.format(query=query, context=context).strip()
-    else:
-        user_prompt = f"{query}\n\n{context}".strip()
+Provide root cause + recommended fix steps.
+""".strip()
 
     start = time.time()
 
-    r = requests.post(
-        CHAT_URL,
-        json={
-            "model": LLM_MODEL,
-            "messages": [
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        },
-        timeout=timeout_sec
-    )
+    r = requests.post(CHAT_URL, json={
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.2,
+        "max_tokens": 220
+    })
 
     try:
         j = r.json()
@@ -329,18 +286,30 @@ def ask_llm(context: str, query: str, lang: str = "en"):
     if r.status_code >= 400:
         raise RuntimeError(f"Chat API error. status={r.status_code} body={j}")
 
+    end = time.time()
+
     if "choices" not in j or not j["choices"]:
         raise RuntimeError(f"Chat API bad response: {j}")
 
-    raw_answer = j["choices"][0]["message"]["content"] or ""
-    fixed_answer = normalize_numbered_steps(raw_answer)
-
-    end = time.time()
     return {
-        "answer": fixed_answer,
-        "raw_answer": raw_answer,  # nech si pro debug (klidně pak smaž)
+        "answer": j["choices"][0]["message"]["content"],
         "response_time_seconds": round(end - start, 2)
     }
+
+def solve_query(query: str, lang: str, k: int, dedup_limit: int = 3):
+    # 1) primární odpověď: BEZ kontextu z DB
+    llm_result = ask_llm("", query, lang)
+
+    # 2) podobné případy: jen pro UI
+    similar_raw = search_similar(query, k=k)
+    similar = deduplicate(similar_raw, limit=dedup_limit)
+    similar = enrich_similar_cases(similar, lang)
+
+    # 3) relevance gate (ať se tam necpou kraviny)
+    similar = filter_similar(similar)   # viz níže
+
+    return llm_result, similar
+
 
 def zammad_post_internal_note(ticket_id: int, text: str):
     url = f"{ZAMMAD_URL}/api/v1/ticket_articles"
@@ -388,9 +357,14 @@ def seen_recently(key: str) -> bool:
     PROCESSED[key] = now
     return False
 
-def run_pipeline(query: str, lang: str, k: int, dedup_limit: int = 3):
-    llm_result = ask_llm("", query, lang)  # primární odpověď bez DB
-    similar = get_similar_cases(query, lang, k=k, dedup_limit=dedup_limit)
+def run_pipeline(query, lang, k):
+    llm_result = ask_llm("", query, lang)
+
+    similar = search_similar(query, k=k)
+    similar = deduplicate(similar, limit=3)
+    similar = enrich_similar_cases(similar, lang)
+    similar = filter_similar(similar)
+
     return llm_result, similar
 
 # ----------------------------------------------------------------------
@@ -411,7 +385,11 @@ def handle_search():
     if lang not in ALLOWED_LANGS:
         lang = "en"
 
-    results = get_similar_cases(query, lang, k=SIMILAR_K_SOLVE, dedup_limit=3)
+
+    results = deduplicate(search_similar(query, k=SIMILAR_K_SOLVE), limit=3)
+    results = enrich_similar_cases(results, lang)
+    results = filter_similar(results)
+
 
     log_interaction({
         "mode": "search",
@@ -438,7 +416,7 @@ def handle_solve():
     if lang not in ALLOWED_LANGS:
         lang = "en"
 
-    llm_result, similar = run_pipeline(query, lang, k=SIMILAR_K_SOLVE, dedup_limit=3)
+    llm_result, similar = solve_query(query, lang, k=SIMILAR_K_SOLVE, dedup_limit=3)
     total_time = round(time.time() - start_total, 2)
 
     # hotový text pro UI (když frontend ignoruje id/label v JSONu)
@@ -498,7 +476,7 @@ def zammad_webhook():
         print(query)
 
         start_total = time.time()
-        llm_result, similar = run_pipeline(query, ZAMMAD_LANG, k=SIMILAR_K_SOLVE, dedup_limit=3)
+        llm_result, similar = solve_query(query, ZAMMAD_LANG, k=SIMILAR_K_ZAMMAD, dedup_limit=3)
         total_time = round(time.time() - start_total, 2)
 
         answer_note = format_zammad_note(llm_result["answer"], similar)

@@ -291,6 +291,28 @@ do ticketu se zapíše Internal Note s návrhem řešení
 
 interakce se uloží do logs/rag.log.jsonl
 
+Configuration via .env
+
+Tuning LLM výstupu (prompt, temperature, token budget) a prahy pro podobné incidenty se nově nastavují přes .env. Díky tomu lze chování asistenta ladit bez úprav kódu a zároveň držet interní prompting mimo veřejný repozitář.
+
+Example .env
+# Similarity filtering (FAISS distance: lower = closer match)
+SIMILAR_MAX_DIST=0.85
+
+# LLM generation parameters
+LLM_TEMPERATURE=0.2
+LLM_MAX_TOKENS=220
+LLM_TOP_P=1.0
+LLM_TIMEOUT_SECONDS=60
+
+# System prompt template (variant A: newline escapes + {lang_instruction})
+LLM_SYS_PROMPT=You are an IT operations troubleshooting assistant.\n\nYour task is to produce short, highly actionable, runbook-style remediation steps.\n\nSTRICT OUTPUT RULES:\n- Output MUST contain numbered steps only (each line starts with "1.", "2.", ...)\n- Each step must be on its own line (newline-separated)\n- Do NOT output any standalone summary lines, headers, or sections\n- Commands must be inline and prefixed with `$`\n- Do NOT use markdown, code blocks, or ``` formatting\n- Prefer real Linux / infra commands\n- Do NOT invent fictional tools or commands\n- Keep explanations minimal and technical\n- Clearly mark disruptive actions (restart, kill, delete)\n{lang_instruction}
+
+# Zammad
+ZAMMAD_URL=http://127.0.0.1:8080
+ZAMMAD_TOKEN=REPLACE_WITH_REAL_TOKEN
+
+
 📝 Logování
 
 Každá interakce (search / solve / zammad) se ukládá do:

@@ -39,7 +39,7 @@ komunikuje přímo s Flask serverem
 
 🔹 Vektorová databáze
 
-500 IT problémů
+620 IT problémů
 
 každá položka: problem, symptoms, analysis, solution
 
@@ -62,9 +62,6 @@ source venv/bin/activate
 
 3️⃣ Instalace závislostí
 pip install -r requirements.txt
-
-
-Pokud requirements.txt ještě nemáš, vytvořím ti ho.
 
 4️⃣ Spuštění LM Studio serveru
 

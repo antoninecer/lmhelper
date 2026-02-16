@@ -355,3 +355,5 @@ Licence
 Tento projekt je určen výhradně pro soukromé použití po předchozí domluvě s autorem.
 Jakékoliv další šíření, komerční využití nebo úpravy k dalšímu publikování jsou možné pouze se souhlasem autora.
 
+https://youtube.com/shorts/n3IcIipvlMw - lmhelper v 1
+https://youtu.be/tgQnXgdJB6Y - LMHelper napojeni na Zammad opensource helpdesk

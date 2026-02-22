@@ -434,6 +434,52 @@ def ask_llm(query: str, context: str, domain: str, reply_lang: str = "cs"):
         "response_time_seconds": round(time.time() - start, 2)
     }
 
+def translate_query_for_retrieval(query: str, target_lang: str = "en") -> str:
+    """
+    Krátký technický překlad dotazu pro retrieval.
+    Překládá jen dotaz, ne odpověď.
+    """
+    target_lang = normalize_lang(target_lang)
+
+    # pokud je target EN, přelož do EN; jinak můžeš vracet původní
+    # (teď máš KB anglicky, takže target bude hlavně en)
+    if target_lang != "en":
+        return query
+
+    timeout_sec = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+
+    sys_prompt = (
+        "You are a translation helper for semantic search.\n"
+        "Translate the user query to concise English for retrieval.\n"
+        "Keep technical terms, product names, usernames, hostnames, and error messages unchanged.\n"
+        "Return only the translated text, no commentary."
+    )
+
+    r = requests.post(
+        CHAT_URL,
+        json={
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": query}
+            ],
+            "temperature": 0.0,
+            "max_tokens": 200
+        },
+        timeout=timeout_sec
+    )
+
+    try:
+        j = r.json()
+    except Exception:
+        return query  # fallback: nepoložit pipeline
+
+    if r.status_code >= 400 or "choices" not in j or not j["choices"]:
+        return query
+
+    out = (j["choices"][0]["message"]["content"] or "").strip()
+    return out if out else query
+
 # ----------------------------------------------------------------------
 # ROUTING / CLASSIFICATION
 # ----------------------------------------------------------------------
@@ -516,10 +562,11 @@ def detect_search_lang(domain: str) -> str:
     return normalize_lang(lang)
 
 def maybe_translate_query_for_retrieval(query: str, domain: str, search_lang: str) -> str:
-    """
-    Základní verze: zatím query neposíláme na překlad, jen vracíme původní.
-    (Můžeme později přidat LLM překladač do EN pro IT retrievel.)
-    """
+    search_lang = normalize_lang(search_lang)
+    if search_lang == "en":
+        translated = translate_query_for_retrieval(query, target_lang="en")
+        print(f"[TRANSLATE][{domain}] {query[:120]} -> {translated[:120]}")
+        return translated
     return query
 
 # ----------------------------------------------------------------------

@@ -354,3 +354,216 @@ Jakékoliv další šíření, komerční využití nebo úpravy k dalšímu pub
 
 https://youtube.com/shorts/n3IcIipvlMw - lmhelper v 1
 https://youtu.be/tgQnXgdJB6Y - LMHelper napojeni na Zammad opensource helpdesk
+
+ne tvuj retrieved kontext je spatny, radeji bych mel nekde par dokumentu s aktualnim znenim zakonu a o ty se v odpovedi opiral, myslim, ze jsme na to sli od zakladu spatne
+
+Jo — a máš pravdu. Tohle je dobrá korekce směru.
+
+To, co máme teď, je vlastně:
+
+incident KB (historické problémy/řešení),
+
+což je super pro IT/helpdesk,
+
+ale pro HR/finance/právní věci je to slabý základ.
+
+U HR/finance potřebuješ spíš:
+
+Správný základ pro HR/finance
+
+Zdrojové dokumenty (zákony, interní směrnice, mzdová pravidla, onboarding checklisty)
+
+RAG nad dokumenty (chunky + metadata)
+
+Citace/paragraf/zdroj v odpovědi
+
+Teprve incident KB jako sekundární vrstva (praktické provozní příklady)
+
+Co je teď špatně v principu
+
+Tvůj současný HR/finance RAG je postavený na uměle vytvořených Q/A případech v angličtině. To znamená:
+
+model nehledá v autoritativním textu,
+
+hledá v „převyprávěných“ incidentech,
+
+a pak to kreativně rozvine → proto ty divné odpovědi.
+
+U zákonných témat je to fakt risk:
+
+znění zákona se mění,
+
+formulace musí být přesná,
+
+a LLM nesmí „dopočítávat realitu“.
+
+Jak to přestavět správně (a použitelné)
+
+Uděláme dvouvrstvý RAG:
+
+Vrstva A — dokumentová (hlavní)
+
+Pro HR/finance:
+
+Zákoník práce (PDF)
+
+interní směrnice (PDF/DOCX/TXT)
+
+mzdové termíny / payroll pravidla
+
+schvalovací procesy faktur
+
+onboarding policy
+
+Výstup odpovědi:
+
+krátké kroky
+
+„opřeno o“ konkrétní dokument/sekci (ideálně citace chunku)
+
+Vrstva B — incidentová (doplňková)
+
+To co máš teď (problems.jsonl) necháme:
+
+IT: klidně primární
+
+HR/finance: spíš sekundární „operativní zkušenost“
+
+Takže např.:
+
+HR otázka → nejdřív dokumenty (zákon + směrnice)
+
+potom případně přimíchat praktický postup z incident KB
+
+Co to znamená pro tvůj server
+
+Místo „jednoho univerzálního retrievalu“ budeš mít pro doménu volbu zdroje:
+
+it → incident KB (JSONL/FAISS)
+
+hr → docs KB (zákony + HR směrnice) + volitelně incident KB
+
+finance → docs KB (interní finance pravidla + účetní postupy) + volitelně incident KB
+
+onboarding → ideálně interní checklist docs + volitelně incident KB
+
+Praktický redesign (bez přepisování všeho od nuly)
+1) Zachovat současný rag_server.py jako orchestrátor
+
+Jen doplnit:
+
+retrieve_from_docs(domain, query, lang)
+
+retrieve_from_incidents(domain, query, lang)
+
+a podle domény rozhodnout, co je primární.
+
+2) Přidat nový „docs indexer“
+
+Nový skript třeba:
+
+embedding/embed_docs_faiss.py
+
+Ten udělá:
+
+načte PDF/TXT/DOCX
+
+rozseká na chunky
+
+uloží vectordb_docs/<domain>/faiss.index
+
+meta.pkl s metadaty:
+
+source_file
+
+section
+
+page
+
+chunk_text
+
+To je přesně to, co teď potřebuješ.
+
+3) V odpovědi vynutit režim podle domény
+
+Pro HR/finance prompt:
+
+„odpověz v jazyce dotazu“
+
+„opři se primárně o dokumentové pasáže“
+
+„neuváděj právní/tax jistotu bez ověření“
+
+„na konci dej krok ‘ověřit aktuální interní směrnici / účetní’ pokud je to compliance věc“
+
+Ano, a ten zákoník práce PDF je přesně správný start
+
+Máš nahraný soubor, takže tím můžeme začít hned.
+
+Doporučený postup:
+
+HR docs MVP (minimum)
+
+Zákoník práce PDF → chunks → HR docs vector DB
+
+Přidat 1–2 interní HR texty (až budou)
+
+V rag_server přepnout HR doménu na docs-first
+
+Tím okamžitě dostaneš:
+
+menší halucinace,
+
+relevantnější odpovědi,
+
+lepší oporu pro HR.
+
+Co bych udělal teď hned (konkrétně)
+Krok 1
+
+Necháme incident KB:
+
+it ✅ primární
+
+onboarding ✅ zatím OK
+
+Krok 2
+
+Předěláme HR na docs-first:
+
+data/hr_docs/...
+
+vectordb_docs/hr/...
+
+Krok 3
+
+Finance zatím necháme incident KB, ale připravíme:
+
+interní finance směrnici / AP proces / schvalování faktur (jakmile dodáš PDF/TXT)
+
+Důležitá věc k očekávání
+
+Lokální model (LM Studio) ti sám nepůjde na internet a nebude „vědět aktuální zákony“, pokud mu je nedáš.
+
+Takže správná cesta je přesně to, co říkáš:
+
+stáhnout / uložit aktuální PDF/TXT
+
+indexovat je
+
+a odpovídat nad nimi
+
+To je správně a profesionálně.
+
+Shrnutí
+
+Ano:
+
+šli jsme správně pro IT,
+
+ale pro HR/finance jsme šli od základu špatně,
+
+a tvoje intuice je přesná: potřebuješ dokumentový RAG, ne incidentový RAG.
+
+Jestli chceš, další krok uděláme rovnou prakticky:
+napíšu ti nový embed_docs_faiss.py (PDF/TXT chunking + FAISS) a kostru změn do rag_server.py, aby HR jelo z dokumentů jako primární zdroj.

@@ -8,7 +8,7 @@ import time
 import json
 import re
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,70 +19,164 @@ CORS(app)
 # ----------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------
-LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:9999/v1").rstrip("/")
 
+LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1").rstrip("/")
 EMBED_URL = os.getenv("EMBED_URL", f"{LMSTUDIO_BASE_URL}/embeddings")
-CHAT_URL  = os.getenv("CHAT_URL",  f"{LMSTUDIO_BASE_URL}/chat/completions")
+CHAT_URL = os.getenv("CHAT_URL", f"{LMSTUDIO_BASE_URL}/chat/completions")
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-nomic-embed-text-v1.5")
-LLM_MODEL   = os.getenv("LLM_MODEL",   "qwen2.5-7b-instruct-mlx")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen/qwen3-4b-2507")
 
-ALLOWED_LANGS = ["en", "cz", "de", "pl", "it"]
+# sjednocení: podporujeme cs i cz, interně normalizujeme na "cs"
+ALLOWED_LANGS = ["en", "cs", "cz", "de", "pl", "it"]
 
-# Similarity filtering (FAISS "distance": lower = closer match)
-SIMILAR_MAX_DIST = float(os.getenv("SIMILAR_MAX_DIST", "0.85"))
-SIMILAR_K_SOLVE  = int(os.getenv("SIMILAR_K_SOLVE", "5"))
+SIMILAR_MAX_DIST = float(os.getenv("SIMILAR_MAX_DIST", "0.84"))
+SIMILAR_K_SOLVE = int(os.getenv("SIMILAR_K_SOLVE", "5"))
 SIMILAR_K_ZAMMAD = SIMILAR_K_SOLVE
 
-# Paths robust vůči working directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-INDEX = os.path.join(BASE_DIR, "..", "vectordb", "faiss.index")
-META  = os.path.join(BASE_DIR, "..", "vectordb", "meta.pkl")
+ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
 # ----------------------------------------------------------------------
 # ZAMMAD CONFIG
 # ----------------------------------------------------------------------
 
-ZAMMAD_URL = os.getenv("ZAMMAD_URL", "http://127.0.0.1:8080")
+ZAMMAD_URL = os.getenv("ZAMMAD_URL", "http://127.0.0.1:8080").rstrip("/")
 ZAMMAD_TOKEN = os.getenv("ZAMMAD_TOKEN")
-ZAMMAD_LANG = os.getenv("ZAMMAD_LANG", "en").lower()
-
-if ZAMMAD_LANG not in ALLOWED_LANGS:
-    ZAMMAD_LANG = "en"
 
 if not ZAMMAD_TOKEN:
     raise RuntimeError("ZAMMAD_TOKEN is not set (check .env or environment variables)")
+
+INTERNAL_EMAIL_DOMAIN = (os.getenv("INTERNAL_EMAIL_DOMAIN", "ventureout.cz") or "").strip().lower()
+
+# Skupiny, ve kterých má AI běžet
+AI_ENABLED_GROUPS = {
+    x.strip().lower()
+    for x in (os.getenv("AI_ENABLED_GROUPS", "IT,HR,Finance,Onboarding") or "").split(",")
+    if x.strip()
+}
+
+DEFAULT_DOMAIN = (os.getenv("DEFAULT_DOMAIN", "it") or "it").strip().lower()
+DEFAULT_REPLY_LANG = (os.getenv("DEFAULT_REPLY_LANG", "cs") or "cs").strip().lower()
+DEFAULT_SEARCH_LANG = (os.getenv("DEFAULT_SEARCH_LANG", "cs") or "cs").strip().lower()
+
+# mapování názvu skupiny v Zammadu -> doména
+GROUP_TO_DOMAIN = {
+    (os.getenv("GROUP_MAP_IT", "IT") or "IT").strip().lower(): "it",
+    (os.getenv("GROUP_MAP_HR", "HR") or "HR").strip().lower(): "hr",
+    (os.getenv("GROUP_MAP_FINANCE", "Finance") or "Finance").strip().lower(): "finance",
+    (os.getenv("GROUP_MAP_ONBOARDING", "Onboarding") or "Onboarding").strip().lower(): "onboarding",
+}
+
+SEARCH_LANG_BY_DOMAIN = {
+    "it": (os.getenv("IT_SEARCH_LANG", "en") or "en").strip().lower(),
+    "hr": (os.getenv("HR_SEARCH_LANG", "cs") or "cs").strip().lower(),
+    "finance": (os.getenv("FINANCE_SEARCH_LANG", "cs") or "cs").strip().lower(),
+    "onboarding": (os.getenv("ONBOARDING_SEARCH_LANG", "cs") or "cs").strip().lower(),
+}
+
+DOMAIN_PROMPT_ENV = {
+    "it": "LLM_SYS_PROMPT_IT",
+    "hr": "LLM_SYS_PROMPT_HR",
+    "finance": "LLM_SYS_PROMPT_FINANCE",
+    "onboarding": "LLM_SYS_PROMPT_ONBOARDING",
+}
+
+# ----------------------------------------------------------------------
+# KB CONFIG (4 domény)
+# ----------------------------------------------------------------------
+
+def _abs_path_from_env(key: str, fallback_rel: str) -> str:
+    raw = (os.getenv(key, fallback_rel) or fallback_rel).strip()
+    if os.path.isabs(raw):
+        return raw
+    return os.path.abspath(os.path.join(ROOT_DIR, raw))
+
+KB_CONFIG = {
+    "it": {
+        "jsonl": _abs_path_from_env("KB_IT_JSONL", "data/it/problems.jsonl"),
+        "index": _abs_path_from_env("KB_IT_INDEX", "vectordb/it/faiss.index"),
+        "meta": _abs_path_from_env("KB_IT_META", "vectordb/it/meta.pkl"),
+    },
+    "hr": {
+        "jsonl": _abs_path_from_env("KB_HR_JSONL", "data/hr/problems.jsonl"),
+        "index": _abs_path_from_env("KB_HR_INDEX", "vectordb/hr/faiss.index"),
+        "meta": _abs_path_from_env("KB_HR_META", "vectordb/hr/meta.pkl"),
+    },
+    "finance": {
+        "jsonl": _abs_path_from_env("KB_FINANCE_JSONL", "data/finance/problems.jsonl"),
+        "index": _abs_path_from_env("KB_FINANCE_INDEX", "vectordb/finance/faiss.index"),
+        "meta": _abs_path_from_env("KB_FINANCE_META", "vectordb/finance/meta.pkl"),
+    },
+    "onboarding": {
+        "jsonl": _abs_path_from_env("KB_ONBOARDING_JSONL", "data/onboarding/problems.jsonl"),
+        "index": _abs_path_from_env("KB_ONBOARDING_INDEX", "vectordb/onboarding/faiss.index"),
+        "meta": _abs_path_from_env("KB_ONBOARDING_META", "vectordb/onboarding/meta.pkl"),
+    },
+}
 
 # ----------------------------------------------------------------------
 # LOGGING
 # ----------------------------------------------------------------------
 
-LOG_DIR  = os.path.join(BASE_DIR, "logs")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "rag.log.jsonl")
 
 def log_interaction(payload: dict):
     os.makedirs(LOG_DIR, exist_ok=True)
-    payload["timestamp"] = datetime.utcnow().isoformat()
+    payload["timestamp"] = datetime.now(timezone.utc).isoformat()
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 # ----------------------------------------------------------------------
-# LOAD VECTOR INDEX
+# LOAD ALL VECTOR DBs
 # ----------------------------------------------------------------------
 
-index = faiss.read_index(INDEX)
+KB_RUNTIME = {}  # domain -> {"index":..., "metadata":[...], ...}
 
-with open(META, "rb") as f:
-    metadata = pickle.load(f)
+def load_kb(domain: str, cfg: dict):
+    idx_path = cfg["index"]
+    meta_path = cfg["meta"]
+    if not os.path.exists(idx_path):
+        raise FileNotFoundError(f"Missing FAISS index for '{domain}': {idx_path}")
+    if not os.path.exists(meta_path):
+        raise FileNotFoundError(f"Missing meta.pkl for '{domain}': {meta_path}")
 
-#FAISS_METRIC = getattr(index, "metric_type", faiss.METRIC_L2)
-#IS_IP = (FAISS_METRIC == faiss.METRIC_INNER_PRODUCT)
-#print("FAISS metric_type:", FAISS_METRIC, "IS_IP:", IS_IP, "d:", index.d, "ntotal:", index.ntotal, "meta:", len(metadata))
+    index = faiss.read_index(idx_path)
+    with open(meta_path, "rb") as f:
+        metadata = pickle.load(f)
+
+    KB_RUNTIME[domain] = {
+        "index": index,
+        "metadata": metadata,
+        "index_path": idx_path,
+        "meta_path": meta_path,
+    }
+
+for _domain, _cfg in KB_CONFIG.items():
+    try:
+        load_kb(_domain, _cfg)
+        print(f"[KB] Loaded {_domain}: {KB_RUNTIME[_domain]['index_path']}")
+    except Exception as e:
+        print(f"[KB] WARNING: {_domain} not loaded: {e}")
+
+if DEFAULT_DOMAIN not in KB_RUNTIME and KB_RUNTIME:
+    DEFAULT_DOMAIN = list(KB_RUNTIME.keys())[0]
+
+if not KB_RUNTIME:
+    raise RuntimeError("No KB loaded. Check KB_* paths in .env and FAISS files.")
 
 # ----------------------------------------------------------------------
 # HELPERS
 # ----------------------------------------------------------------------
 
+def normalize_lang(lang: str) -> str:
+    x = (lang or "").strip().lower()
+    if x == "cz":
+        return "cs"
+    if x not in ["en", "cs", "de", "pl", "it"]:
+        return "en"
+    return x
 
 def normalize_numbered_steps(text: str) -> str:
     lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -92,11 +186,15 @@ def normalize_numbered_steps(text: str) -> str:
         if not m:
             continue
         body = m.group(1).strip()
-        # když je to jen příkaz, přilep ho k předchozímu kroku
         if body.startswith("$") and steps:
             steps[-1] = steps[-1].rstrip() + " " + body
         else:
             steps.append(body)
+
+    if not steps and text.strip():
+        # fallback: když model nedodrží formát
+        compact = " ".join([x.strip() for x in text.splitlines() if x.strip()])
+        return f"1. {compact}" if compact else ""
 
     return "\n".join(f"{i}. {s}" for i, s in enumerate(steps, start=1))
 
@@ -105,10 +203,11 @@ def filter_similar(similar):
     return [c for c in similar if c["distance"] <= SIMILAR_MAX_DIST]
 
 def embed(text: str) -> np.ndarray:
-    r = requests.post(EMBED_URL, json={
-        "model": EMBED_MODEL,
-        "input": text
-    })
+    r = requests.post(
+        EMBED_URL,
+        json={"model": EMBED_MODEL, "input": text},
+        timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+    )
 
     try:
         j = r.json()
@@ -123,14 +222,18 @@ def embed(text: str) -> np.ndarray:
 
     return np.array(j["data"][0]["embedding"], dtype="float32").reshape(1, -1)
 
+def search_similar(query: str, domain: str, k: int = 5):
+    if domain not in KB_RUNTIME:
+        raise RuntimeError(f"Domain '{domain}' KB is not loaded.")
 
-def search_similar(query: str, k: int = 5):
     vec = embed(query)
+    index = KB_RUNTIME[domain]["index"]
+    metadata = KB_RUNTIME[domain]["metadata"]
+
     distances, indices = index.search(vec, k)
 
-    print("RAW D:", distances[0])
-    print("RAW I:", indices[0])
-
+    print(f"[SEARCH][{domain}] RAW D:", distances[0])
+    print(f"[SEARCH][{domain}] RAW I:", indices[0])
 
     results = []
     for dist, idx in zip(distances[0], indices[0]):
@@ -138,28 +241,27 @@ def search_similar(query: str, k: int = 5):
             continue
         row = metadata[int(idx)]
         results.append({
-            "id": int(row.get("id", idx)),   # primárně reálné ID z JSONL
+            "id": int(row.get("id", idx)),
             "distance": float(dist),
             "problem": row.get("problem", ""),
             "symptoms": row.get("symptoms", ""),
             "analysis": row.get("analysis", ""),
-            "solution": row.get("solution", "")
+            "solution": row.get("solution", ""),
+            "domain": domain,
         })
     return results
-
 
 def deduplicate(results, limit: int = 3):
     seen = set()
     unique = []
     for r in results:
-        key = r.get("problem", "")
+        key = (r.get("problem", "") or "").strip().lower()
         if key and key not in seen:
             seen.add(key)
             unique.append(r)
         if len(unique) >= limit:
             break
     return unique
-
 
 def distance_label(dist: float, lang: str = "en") -> str:
     labels = {
@@ -169,7 +271,7 @@ def distance_label(dist: float, lang: str = "en") -> str:
             "related": "generally related topic",
             "noise": "likely noise / weak match",
         },
-        "cz": {
+        "cs": {
             "almost_same": "téměř stejný problém",
             "very_similar": "velmi podobný incident",
             "related": "obecně příbuzné téma",
@@ -195,7 +297,7 @@ def distance_label(dist: float, lang: str = "en") -> str:
         },
     }
 
-    d = labels.get(lang, labels["en"])
+    d = labels.get(normalize_lang(lang), labels["en"])
 
     if dist < 0.80:
         return d["almost_same"]
@@ -205,8 +307,8 @@ def distance_label(dist: float, lang: str = "en") -> str:
         return d["related"]
     return d["noise"]
 
-
 def enrich_similar_cases(similar_cases, lang: str):
+    lang = normalize_lang(lang)
     for i, x in enumerate(similar_cases, start=1):
         x["distance_label"] = distance_label(x["distance"], lang)
         x["case_id"] = x["id"]
@@ -214,93 +316,82 @@ def enrich_similar_cases(similar_cases, lang: str):
         x["rank"] = i
     return similar_cases
 
-def get_similar_cases(query: str, lang: str, k: int, dedup_limit: int = 3):
-    raw = search_similar(query, k=k)          # vrací v pořadí FAISS (většinou už best-first)
-    raw = filter_similar(raw)                 # seřadí + ořízne podle SIMILAR_MAX_DIST
-    raw = deduplicate(raw, limit=dedup_limit) # zachová best-first
-    raw = enrich_similar_cases(raw, lang)     # rank sedí
+def get_similar_cases(query: str, domain: str, label_lang: str, k: int, dedup_limit: int = 3):
+    raw = search_similar(query, domain=domain, k=k)
+    raw = filter_similar(raw)
+    raw = deduplicate(raw, limit=dedup_limit)
+    raw = enrich_similar_cases(raw, label_lang)
     return raw
 
 def build_context_text(similar_cases) -> str:
-    # Kontext pro LLM – jen “Similar incidents”
     parts = []
     for x in similar_cases:
         parts.append(
             f"- Similar incident [ID {x['id']}] (dist {x['distance']:.3f}, {x['distance_label']}):\n"
             f"  Problem: {x['problem']}\n"
-            f"  Symptoms: {x['symptoms']}\n"
-            f"  Resolution: {x['solution']}"
+            f"  Symptoms: {x.get('symptoms','')}\n"
+            f"  Resolution: {x.get('solution','')}"
         )
     return "\n\n".join(parts)
 
-
 def format_similar_lines(similar_cases) -> list[str]:
-    """
-    Hotový výpis pro UI/Zammad: vždy používá DB ID, distance i interpretaci.
-    """
-    lines = []
-    for x in similar_cases:
-        lines.append(
-            f"ID {x['id']} ({x['distance']:.3f}, {x['distance_label']}): {x['problem']}"
-        )
-    return lines
+    return [
+        f"ID {x['id']} ({x['distance']:.3f}, {x['distance_label']}): {x['problem']}"
+        for x in similar_cases
+    ]
 
-
-def ask_llm(context: str, query: str, lang: str = "en"):
+def get_lang_instruction(lang: str) -> str:
+    lang = normalize_lang(lang)
     lang_map = {
         "en": "Write answer in English. Short, technical, operational.",
-        "cz": "Odpověz česky. Stručně, technicky, provozní kroky.",
+        "cs": "Odpověz česky. Stručně, technicky, provozní kroky.",
         "de": "Antwort auf Deutsch. Kurz und technisch.",
         "pl": "Odpowiedz po polsku. Krótko i technicznie.",
         "it": "Rispondi in italiano. Breve e tecnico."
     }
-    lang_instruction = lang_map.get(lang, lang_map["en"])
+    return lang_map.get(lang, lang_map["en"])
 
-    # ---- LLM params z .env ----
-    temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
-    max_tokens  = int(os.getenv("LLM_MAX_TOKENS", "220"))
-    timeout_sec = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+def get_system_prompt_for_domain(domain: str, reply_lang: str) -> str:
+    lang_instruction = get_lang_instruction(reply_lang)
 
-    # ---- sys_prompt z .env (varianta A: \n + {lang_instruction}) ----
-    sys_tmpl = (os.getenv("LLM_SYS_PROMPT", "") or "").strip()
+    env_key = DOMAIN_PROMPT_ENV.get(domain, "")
+    sys_tmpl = (os.getenv(env_key, "") or "").strip() if env_key else ""
+
     if not sys_tmpl:
-        # fallback, kdyby nebyl .env
+        sys_tmpl = (os.getenv("LLM_SYS_PROMPT", "") or "").strip()
+
+    if not sys_tmpl:
         sys_tmpl = (
-            "You are an IT operations troubleshooting assistant.\n\n"
-            "Your task is to produce short, highly actionable, runbook-style remediation steps.\n\n"
-            "STRICT OUTPUT RULES:\n"
-            "- Output MUST contain numbered steps only (each line starts with \"1.\", \"2.\", ...)\n"
-            "- Each step must be on its own line (newline-separated)\n"
-            "- Do NOT output any standalone summary lines, headers, or sections\n"
-            "- Commands must be inline and prefixed with `$`\n"
-            "- Do NOT use markdown, code blocks, or ``` formatting\n"
-            "- Prefer real Linux / infra commands\n"
-            "- Do NOT invent fictional tools or commands\n"
-            "- Keep explanations minimal and technical\n"
-            "- Clearly mark disruptive actions (restart, kill, delete)\n"
+            "You are an internal service desk assistant.\n"
+            "Return numbered operational steps only.\n"
             "{lang_instruction}"
         )
 
-    # z .env dostaneš \n jako text -> převést na reálné nové řádky
     sys_tmpl = sys_tmpl.replace("\\n", "\n")
 
-    # bezpečně dosadit jen pokud tam placeholder je
     if "{lang_instruction}" in sys_tmpl:
-        sys_prompt = sys_tmpl.format(lang_instruction=lang_instruction).strip()
-    else:
-        sys_prompt = (sys_tmpl + "\n" + lang_instruction).strip()
+        return sys_tmpl.format(lang_instruction=lang_instruction).strip()
+    return (sys_tmpl + "\n" + lang_instruction).strip()
 
-    # ---- user prompt template volitelně z .env ----
+def ask_llm(query: str, context: str, domain: str, reply_lang: str = "cs"):
+    reply_lang = normalize_lang(reply_lang)
+
+    temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+    max_tokens = int(os.getenv("LLM_MAX_TOKENS", "400"))
+    top_p = float(os.getenv("LLM_TOP_P", "1.0"))
+    timeout_sec = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+
+    sys_prompt = get_system_prompt_for_domain(domain, reply_lang)
+
     user_tmpl = (os.getenv("LLM_USER_PROMPT", "") or "").strip()
     if not user_tmpl:
         user_tmpl = (
             "User problem:\n{query}\n\n"
             "Similar historical incidents (if any):\n{context}\n\n"
-            "Provide root cause + recommended fix steps."
+            "Provide recommended fix steps."
         )
     user_tmpl = user_tmpl.replace("\\n", "\n")
 
-    # stejně bezpečně jako u sys_prompt
     if "{query}" in user_tmpl or "{context}" in user_tmpl:
         user_prompt = user_tmpl.format(query=query, context=context).strip()
     else:
@@ -317,6 +408,7 @@ def ask_llm(context: str, query: str, lang: str = "en"):
                 {"role": "user", "content": user_prompt}
             ],
             "temperature": temperature,
+            "top_p": top_p,
             "max_tokens": max_tokens
         },
         timeout=timeout_sec
@@ -336,12 +428,132 @@ def ask_llm(context: str, query: str, lang: str = "en"):
     raw_answer = j["choices"][0]["message"]["content"] or ""
     fixed_answer = normalize_numbered_steps(raw_answer)
 
-    end = time.time()
     return {
         "answer": fixed_answer,
-        "raw_answer": raw_answer,  # nech si pro debug (klidně pak smaž)
-        "response_time_seconds": round(end - start, 2)
+        "raw_answer": raw_answer,
+        "response_time_seconds": round(time.time() - start, 2)
     }
+
+# ----------------------------------------------------------------------
+# ROUTING / CLASSIFICATION
+# ----------------------------------------------------------------------
+
+DOMAIN_KEYWORDS = {
+    "it": [
+        "server", "linux", "vpn", "mail", "email", "printer", "network", "ssh", "dns", "login",
+        "heslo", "přihlás", "prihlas", "pošta", "mailbox", "wifi", "outlook", "notebook", "laptop",
+        "access denied", "reset password", "active directory", "ldap"
+    ],
+    "hr": [
+        "dovolen", "nemoc", "neschopen", "mateř", "mater", "otcov", "paragraf", "pracovní", "pracovni",
+        "mzda", "výplata", "vyplata", "směna", "smena", "pracovní doba", "docházka", "dochazka",
+        "hr", "zaměstnan", "zamestnan", "zákoník práce", "zakonik"
+    ],
+    "finance": [
+        "faktura", "invoice", "platba", "payment", "účet", "ucet", "iban", "dph", "vat", "cashflow",
+        "splatnost", "dodavatel", "supplier", "úhrada", "uhrada", "převod", "prevod", "finance",
+        "rozpočet", "rozpocet", "vyúčtování", "vyuctovani"
+    ],
+    "onboarding": [
+        "onboarding", "nováček", "novacek", "nástup", "nastup", "first day", "první den", "prvni den",
+        "access", "přístup", "pristup", "účet", "ucet", "notebook", "equipment", "vybavení", "vybaveni",
+        "konto", "úvodní školení", "uvodni skoleni"
+    ],
+}
+
+def classify_domain_from_text(text: str) -> tuple[str, str]:
+    """
+    Jednoduchá heuristika. Když časem budeš chtít, dá se nahradit LLM klasifikací.
+    Vrací (domain, reason)
+    """
+    t = (text or "").lower()
+    scores = {d: 0 for d in DOMAIN_KEYWORDS.keys()}
+
+    for domain, words in DOMAIN_KEYWORDS.items():
+        for w in words:
+            if w in t:
+                scores[domain] += 1
+
+    best_domain = max(scores, key=scores.get)
+    best_score = scores[best_domain]
+
+    if best_score <= 0:
+        return DEFAULT_DOMAIN, "fallback_default_domain"
+
+    return best_domain, f"keyword_classifier:{scores}"
+
+def resolve_domain(ticket: dict | None, query: str, requested_domain: str | None = None) -> tuple[str, str]:
+    # 1) explicitní doména z API requestu
+    if requested_domain:
+        d = requested_domain.strip().lower()
+        if d in KB_RUNTIME:
+            return d, "request.domain"
+
+    # 2) Zammad group name
+    if ticket:
+        group = (ticket.get("group") or {}) if isinstance(ticket.get("group"), dict) else {}
+        group_name = (group.get("name") or "").strip().lower()
+        if group_name:
+            mapped = GROUP_TO_DOMAIN.get(group_name)
+            if mapped and mapped in KB_RUNTIME:
+                return mapped, f"zammad.group:{group_name}"
+
+    # 3) fallback klasifikace z textu
+    d, reason = classify_domain_from_text(query)
+    if d in KB_RUNTIME:
+        return d, reason
+
+    # 4) hard fallback
+    return DEFAULT_DOMAIN, "hard_fallback"
+
+def detect_reply_lang(payload_lang: str | None = None) -> str:
+    if payload_lang:
+        return normalize_lang(payload_lang)
+    return normalize_lang(DEFAULT_REPLY_LANG)
+
+def detect_search_lang(domain: str) -> str:
+    lang = SEARCH_LANG_BY_DOMAIN.get(domain, DEFAULT_SEARCH_LANG)
+    return normalize_lang(lang)
+
+def maybe_translate_query_for_retrieval(query: str, domain: str, search_lang: str) -> str:
+    """
+    Základní verze: zatím query neposíláme na překlad, jen vracíme původní.
+    (Můžeme později přidat LLM překladač do EN pro IT retrievel.)
+    """
+    return query
+
+# ----------------------------------------------------------------------
+# PIPELINE
+# ----------------------------------------------------------------------
+
+def run_pipeline(query: str, domain: str, reply_lang: str, k: int, dedup_limit: int = 3):
+    # retrieval language (např. IT=en)
+    search_lang = detect_search_lang(domain)
+
+    # tady časem může být LLM překlad query -> search_lang
+    retrieval_query = maybe_translate_query_for_retrieval(query, domain, search_lang)
+
+    similar = get_similar_cases(
+        query=retrieval_query,
+        domain=domain,
+        label_lang=reply_lang,
+        k=k,
+        dedup_limit=dedup_limit
+    )
+
+    context = build_context_text(similar)
+    llm_result = ask_llm(query=query, context=context, domain=domain, reply_lang=reply_lang)
+
+    return llm_result, similar, {
+        "domain": domain,
+        "reply_lang": reply_lang,
+        "search_lang": search_lang,
+        "retrieval_query": retrieval_query,
+    }
+
+# ----------------------------------------------------------------------
+# ZAMMAD WRITE BACK
+# ----------------------------------------------------------------------
 
 def zammad_post_internal_note(ticket_id: int, text: str):
     url = f"{ZAMMAD_URL}/api/v1/ticket_articles"
@@ -356,27 +568,32 @@ def zammad_post_internal_note(ticket_id: int, text: str):
         "internal": True
     }
 
-    r = requests.post(url, headers=headers, json=payload)
+    r = requests.post(url, headers=headers, json=payload, timeout=30)
 
     print("=== ZAMMAD WRITE BACK ===")
     print("Status:", r.status_code)
     print("Response:", r.text)
 
+    if r.status_code >= 400:
+        raise RuntimeError(f"Zammad write-back failed: {r.status_code} {r.text[:500]}")
 
-def format_zammad_note(llm_answer: str, similar_cases) -> str:
-    if not similar_cases:
-        return llm_answer.strip()
+def format_zammad_note(llm_answer: str, similar_cases, domain: str, routing_reason: str) -> str:
+    header_lines = [
+        f"AI domain: {domain}",
+        f"Routing: {routing_reason}",
+    ]
 
-    header_lines = ["Similar historical incidents used:"]
-    header_lines.extend([f"- {line}" for line in format_similar_lines(similar_cases)])
+    if similar_cases:
+        header_lines.append("Similar historical incidents used:")
+        header_lines.extend([f"- {line}" for line in format_similar_lines(similar_cases)])
 
     return "\n".join(header_lines) + "\n\n" + llm_answer.strip()
 
 # ----------------------------------------------------------------------
-# ZAMMAD WEBHOOK DEDUP (proti dvojímu spuštění triggeru)
+# ZAMMAD WEBHOOK DEDUP
 # ----------------------------------------------------------------------
 
-PROCESSED = {}  # key -> timestamp
+PROCESSED = {}
 DEDUP_WINDOW_SEC = int(os.getenv("ZAMMAD_DEDUP_WINDOW_SEC", "90"))
 
 def seen_recently(key: str) -> bool:
@@ -389,35 +606,50 @@ def seen_recently(key: str) -> bool:
     PROCESSED[key] = now
     return False
 
-def run_pipeline(query: str, lang: str, k: int, dedup_limit: int = 3):
-    llm_result = ask_llm("", query, lang)  # primární odpověď bez DB
-    similar = get_similar_cases(query, lang, k=k, dedup_limit=dedup_limit)
-    return llm_result, similar
-
 # ----------------------------------------------------------------------
 # API ENDPOINTS
 # ----------------------------------------------------------------------
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({
+        "status": "ok",
+        "loaded_domains": sorted(list(KB_RUNTIME.keys())),
+        "default_domain": DEFAULT_DOMAIN,
+        "model": LLM_MODEL,
+        "embed_model": EMBED_MODEL,
+    })
 
+@app.route("/classify", methods=["POST"])
+def handle_classify():
+    data = request.json or {}
+    query = (data.get("query") or "").strip()
+    domain, reason = resolve_domain(ticket=None, query=query, requested_domain=data.get("domain"))
+    return jsonify({"domain": domain, "reason": reason})
 
 @app.route("/search", methods=["POST"])
 def handle_search():
     data = request.json or {}
     query = (data.get("query") or "").strip()
-    lang  = (data.get("lang") or "en").lower()
+    req_lang = detect_reply_lang(data.get("lang"))
 
-    if lang not in ALLOWED_LANGS:
-        lang = "en"
+    domain, routing_reason = resolve_domain(ticket=None, query=query, requested_domain=data.get("domain"))
 
-    results = get_similar_cases(query, lang, k=SIMILAR_K_SOLVE, dedup_limit=3)
+    results = get_similar_cases(
+        query=maybe_translate_query_for_retrieval(query, domain, detect_search_lang(domain)),
+        domain=domain,
+        label_lang=req_lang,
+        k=SIMILAR_K_SOLVE,
+        dedup_limit=3
+    )
 
     log_interaction({
         "mode": "search",
         "query": query,
-        "lang": lang,
+        "domain": domain,
+        "routing_reason": routing_reason,
+        "reply_lang": req_lang,
+        "search_lang": detect_search_lang(domain),
         "similar_cases": [
             {"id": x["id"], "problem": x["problem"], "distance": x["distance"], "label": x["distance_label"]}
             for x in results
@@ -425,31 +657,42 @@ def handle_search():
         "model": LLM_MODEL
     })
 
-    return jsonify(results)
-
+    return jsonify({
+        "domain": domain,
+        "routing_reason": routing_reason,
+        "search_lang": detect_search_lang(domain),
+        "similar_cases": results
+    })
 
 @app.route("/solve", methods=["POST"])
 def handle_solve():
     start_total = time.time()
-
     data = request.json or {}
+
     query = (data.get("query") or "").strip()
-    lang  = (data.get("lang") or "en").lower()
+    reply_lang = detect_reply_lang(data.get("lang"))
 
-    if lang not in ALLOWED_LANGS:
-        lang = "en"
+    domain, routing_reason = resolve_domain(ticket=None, query=query, requested_domain=data.get("domain"))
 
-    llm_result, similar = run_pipeline(query, lang, k=SIMILAR_K_SOLVE, dedup_limit=3)
+    llm_result, similar, dbg = run_pipeline(
+        query=query,
+        domain=domain,
+        reply_lang=reply_lang,
+        k=SIMILAR_K_SOLVE,
+        dedup_limit=3
+    )
+
     total_time = round(time.time() - start_total, 2)
-
-    # hotový text pro UI (když frontend ignoruje id/label v JSONu)
     similar_lines = format_similar_lines(similar) if similar else []
     similar_text = "\n".join(similar_lines) if similar_lines else ""
 
     log_interaction({
         "mode": "solve",
         "query": query,
-        "lang": lang,
+        "domain": domain,
+        "routing_reason": routing_reason,
+        "reply_lang": reply_lang,
+        "search_lang": dbg["search_lang"],
         "similar_cases": [
             {"id": x["id"], "problem": x["problem"], "distance": x["distance"], "label": x["distance_label"]}
             for x in similar
@@ -461,14 +704,17 @@ def handle_solve():
     })
 
     return jsonify({
+        "domain": domain,
+        "routing_reason": routing_reason,
+        "reply_lang": reply_lang,
+        "search_lang": dbg["search_lang"],
         "llm_answer": llm_result["answer"],
-        "similar_cases": similar,                 # id + distance + distance_label + rank + case_id + label
-        "similar_cases_lines": similar_lines,     # <- hotové řádky (ID + dist + label + problem)
-        "similar_cases_text": similar_text,       # <- hotový blok (když chceš jen printnout)
+        "similar_cases": similar,
+        "similar_cases_lines": similar_lines,
+        "similar_cases_text": similar_text,
         "response_time": llm_result["response_time_seconds"],
         "total_time": total_time
     })
-
 
 @app.route("/zammad", methods=["POST"])
 def zammad_webhook():
@@ -491,18 +737,51 @@ def zammad_webhook():
         if seen_recently(dedup_key):
             return jsonify({"status": "ok", "dedup": True})
 
+        # filtr: jen první článek ticketu (aby se necyklilo)
+        article_count = int(ticket.get("article_count") or 0)
+        if article_count > 1:
+            return jsonify({"status": "ok", "skipped": "not_first_article", "article_count": article_count})
+
+        # filtr: jen povolené skupiny
+        group_name = (((ticket.get("group") or {}) if isinstance(ticket.get("group"), dict) else {}).get("name") or "").strip()
+        if group_name and AI_ENABLED_GROUPS:
+            if group_name.lower() not in AI_ENABLED_GROUPS:
+                return jsonify({"status": "ok", "skipped": "group_not_enabled", "group": group_name})
+
+        # filtr: neodpovídat na interní AI poznámku (aby se nekrmilo samo)
+        sender_name = (article.get("sender") or article.get("from") or "").lower()
+        article_type = (article.get("type") or "").lower()
+        if article_type == "note" and ("ai@" in sender_name or "assistant" in sender_name):
+            return jsonify({"status": "ok", "skipped": "self_note"})
+
         title = (ticket.get("title") or "").strip()
         body = (article.get("body") or "").strip()
         query = f"{title}\n\n{body}".strip()
 
-        print("=== QUERY SENT TO LLM ===")
+        domain, routing_reason = resolve_domain(ticket=ticket, query=query, requested_domain=None)
+        reply_lang = detect_reply_lang(None)
+
+        print("=== ROUTING ===")
+        print("domain:", domain, "| reason:", routing_reason)
+        print("=== QUERY SENT TO PIPELINE ===")
         print(query)
 
         start_total = time.time()
-        llm_result, similar = run_pipeline(query, ZAMMAD_LANG, k=SIMILAR_K_SOLVE, dedup_limit=3)
+        llm_result, similar, dbg = run_pipeline(
+            query=query,
+            domain=domain,
+            reply_lang=reply_lang,
+            k=SIMILAR_K_ZAMMAD,
+            dedup_limit=3
+        )
         total_time = round(time.time() - start_total, 2)
 
-        answer_note = format_zammad_note(llm_result["answer"], similar)
+        answer_note = format_zammad_note(
+            llm_answer=llm_result["answer"],
+            similar_cases=similar,
+            domain=domain,
+            routing_reason=routing_reason
+        )
 
         print("=== LLM ANSWER ===")
         print(answer_note)
@@ -513,7 +792,11 @@ def zammad_webhook():
             "mode": "zammad",
             "ticket_id": ticket_id,
             "article_id": article_id,
-            "lang": ZAMMAD_LANG,
+            "group_name": group_name,
+            "domain": domain,
+            "routing_reason": routing_reason,
+            "reply_lang": reply_lang,
+            "search_lang": dbg["search_lang"],
             "query_preview": query[:500],
             "similar_cases": [
                 {"id": x["id"], "problem": x["problem"], "distance": round(x["distance"], 4), "label": x["distance_label"]}
@@ -525,7 +808,7 @@ def zammad_webhook():
             "model": LLM_MODEL
         })
 
-        return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "domain": domain, "routing_reason": routing_reason})
 
     except Exception as e:
         print("ERROR:", e)
@@ -536,13 +819,12 @@ def zammad_webhook():
         })
         return jsonify({"status": "error", "error": str(e)}), 500
 
-
 # ----------------------------------------------------------------------
 # START SERVER
 # ----------------------------------------------------------------------
 
 if __name__ == "__main__":
-		host = os.getenv("RAG_HOST", "127.0.0.1")
-		port = int(os.getenv("RAG_PORT", "5001"))
-		app.run(host=host, port=port)    
+    host = os.getenv("RAG_HOST", "127.0.0.1")
+    port = int(os.getenv("RAG_PORT", "5001"))
+    app.run(host=host, port=port)
 

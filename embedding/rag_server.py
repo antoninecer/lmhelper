@@ -480,6 +480,148 @@ def translate_query_for_retrieval(query: str, target_lang: str = "en") -> str:
     out = (j["choices"][0]["message"]["content"] or "").strip()
     return out if out else query
 
+def detect_domain_ai(query: str, zammad_group_name: str | None = None) -> tuple[str, str]:
+    """
+    AI router:
+    - Pokud přijde známá Zammad skupina, použije mapování (rychlé a spolehlivé)
+    - Jinak zavolá LLM a nechá ho vrátit jednu doménu: it/hr/finance/onboarding
+    - Když LLM selže, fallback na DEFAULT_DOMAIN
+    """
+    # 1) group override (když webhook nese group name, je to nejlepší signál)
+    group_name = (zammad_group_name or "").strip()
+    group_map = {
+        (os.getenv("GROUP_MAP_IT", "IT") or "").strip().lower(): "it",
+        (os.getenv("GROUP_MAP_HR", "HR") or "").strip().lower(): "hr",
+        (os.getenv("GROUP_MAP_FINANCE", "Finance") or "").strip().lower(): "finance",
+        (os.getenv("GROUP_MAP_ONBOARDING", "Onboarding") or "").strip().lower(): "onboarding",
+    }
+
+    if group_name:
+        g = group_name.lower()
+        if g in group_map:
+            return group_map[g], f"group_map:{group_name}"
+
+    # 2) AI klasifikátor přes LLM
+    timeout_sec = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+
+    system_prompt = (
+        "You are a domain classifier for an internal helpdesk.\n"
+        "Classify the user request into exactly one domain from this set:\n"
+        "- it\n"
+        "- hr\n"
+        "- finance\n"
+        "- onboarding\n\n"
+        "Rules:\n"
+        "- Return ONLY valid JSON, no markdown, no explanation.\n"
+        "- JSON format: {\"domain\":\"it|hr|finance|onboarding\",\"confidence\":0.0,\"reason\":\"short\"}\n"
+        "- 'confidence' is 0..1\n"
+        "- 'reason' is very short English phrase\n"
+        "- If unsure, choose the closest operational domain.\n"
+    )
+
+    user_prompt = f"Request:\n{(query or '').strip()}"
+
+    try:
+        r = requests.post(
+            CHAT_URL,
+            json={
+                "model": LLM_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.0,
+                "max_tokens": 80,
+            },
+            timeout=timeout_sec
+        )
+
+        j = r.json()
+        if r.status_code >= 400:
+            raise RuntimeError(f"Classifier API error: {j}")
+
+        raw = (j["choices"][0]["message"]["content"] or "").strip()
+
+        # zkus čistý JSON
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            # občas model vrátí text kolem -> zkus vytáhnout první {...}
+            m = re.search(r"\{.*\}", raw, re.DOTALL)
+            if not m:
+                raise RuntimeError(f"Classifier returned non-JSON: {raw[:300]}")
+            parsed = json.loads(m.group(0))
+
+        domain = str(parsed.get("domain", "")).strip().lower()
+        conf = parsed.get("confidence", None)
+        reason = str(parsed.get("reason", "")).strip()
+
+        if domain not in ("it", "hr", "finance", "onboarding"):
+            raise RuntimeError(f"Invalid domain from classifier: {domain}")
+
+        return domain, f"ai_classifier:{domain}:{conf}:{reason}"
+
+    except Exception as e:
+        fallback = (os.getenv("DEFAULT_DOMAIN", "it") or "it").strip().lower()
+        if fallback not in ("it", "hr", "finance", "onboarding"):
+            fallback = "it"
+        return fallback, f"fallback:{fallback}:classifier_error:{str(e)[:120]}"
+
+def normalize_lang(lang: str) -> str:
+    x = (lang or "").strip().lower()
+    aliases = {
+        "cz": "cs",
+        "cs": "cs",
+        "en": "en",
+        "de": "de",
+        "pl": "pl",
+        "it": "it",
+    }
+    return aliases.get(x, "cs")
+
+
+def get_search_lang_for_domain(domain: str) -> str:
+    domain = (domain or "it").strip().lower()
+    env_key = {
+        "it": "IT_SEARCH_LANG",
+        "hr": "HR_SEARCH_LANG",
+        "finance": "FINANCE_SEARCH_LANG",
+        "onboarding": "ONBOARDING_SEARCH_LANG",
+    }.get(domain, "DEFAULT_SEARCH_LANG")
+
+    return normalize_lang(os.getenv(env_key, os.getenv("DEFAULT_SEARCH_LANG", "en")))
+
+def get_system_prompt_for_domain(domain: str, reply_lang: str) -> str:
+    domain = (domain or "it").strip().lower()
+    reply_lang = normalize_lang(reply_lang)
+
+    lang_map = {
+        "cs": "Odpověz česky.",
+        "en": "Write the answer in English.",
+        "de": "Antwort auf Deutsch.",
+        "pl": "Odpowiedz po polsku.",
+        "it": "Rispondi in italiano.",
+    }
+    lang_instruction = lang_map.get(reply_lang, "Odpověz česky.")
+
+    env_key = {
+        "it": "LLM_SYS_PROMPT_IT",
+        "hr": "LLM_SYS_PROMPT_HR",
+        "finance": "LLM_SYS_PROMPT_FINANCE",
+        "onboarding": "LLM_SYS_PROMPT_ONBOARDING",
+    }.get(domain, "LLM_SYS_PROMPT")
+
+    sys_tmpl = (os.getenv(env_key, "") or "").strip() or (os.getenv("LLM_SYS_PROMPT", "") or "").strip()
+
+    if not sys_tmpl:
+        sys_tmpl = "You are an internal helpdesk assistant.\nOutput numbered steps only.\n{lang_instruction}"
+
+    sys_tmpl = sys_tmpl.replace("\\n", "\n")
+    if "{lang_instruction}" in sys_tmpl:
+        return sys_tmpl.format(lang_instruction=lang_instruction)
+
+    return sys_tmpl + "\n" + lang_instruction
+
 # ----------------------------------------------------------------------
 # ROUTING / CLASSIFICATION
 # ----------------------------------------------------------------------
@@ -790,7 +932,11 @@ def zammad_webhook():
             return jsonify({"status": "ok", "skipped": "not_first_article", "article_count": article_count})
 
         # filtr: jen povolené skupiny
-        group_name = (((ticket.get("group") or {}) if isinstance(ticket.get("group"), dict) else {}).get("name") or "").strip()
+        group_name = ((ticket.get("group") or {}).get("name") or "").strip()
+        domain, routing_reason = detect_domain_ai(query, zammad_group_name=group_name)
+        reply_lang = normalize_lang(os.getenv("DEFAULT_REPLY_LANG", "cs"))
+        search_lang = get_search_lang_for_domain(domain)
+
         if group_name and AI_ENABLED_GROUPS:
             if group_name.lower() not in AI_ENABLED_GROUPS:
                 return jsonify({"status": "ok", "skipped": "group_not_enabled", "group": group_name})
@@ -805,8 +951,10 @@ def zammad_webhook():
         body = (article.get("body") or "").strip()
         query = f"{title}\n\n{body}".strip()
 
-        domain, routing_reason = resolve_domain(ticket=ticket, query=query, requested_domain=None)
-        reply_lang = detect_reply_lang(None)
+        domain, routing_reason = detect_domain_ai(query)
+        reply_lang = normalize_lang((data.get("lang") or os.getenv("DEFAULT_REPLY_LANG", "cs")))
+        search_lang = get_search_lang_for_domain(domain)
+        search_query = maybe_translate_for_search(query, source_lang=reply_lang, target_lang=search_lang, domain=domain)
 
         print("=== ROUTING ===")
         print("domain:", domain, "| reason:", routing_reason)

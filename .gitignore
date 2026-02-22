@@ -1,2 +1,10 @@
-logs/
 .env
+.zalohaenv
+venv/
+.venv/
+logs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store

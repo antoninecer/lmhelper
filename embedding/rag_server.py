@@ -19,9 +19,10 @@ CORS(app)
 # ----------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------
+LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:9999/v1").rstrip("/")
 
-EMBED_URL = os.getenv("EMBED_URL", "http://127.0.0.1:9999/v1/embeddings")
-CHAT_URL  = os.getenv("CHAT_URL",  "http://127.0.0.1:9999/v1/chat/completions")
+EMBED_URL = os.getenv("EMBED_URL", f"{LMSTUDIO_BASE_URL}/embeddings")
+CHAT_URL  = os.getenv("CHAT_URL",  f"{LMSTUDIO_BASE_URL}/chat/completions")
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-nomic-embed-text-v1.5")
 LLM_MODEL   = os.getenv("LLM_MODEL",   "qwen2.5-7b-instruct-mlx")
@@ -541,4 +542,7 @@ def zammad_webhook():
 # ----------------------------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5001)
+		host = os.getenv("RAG_HOST", "127.0.0.1")
+		port = int(os.getenv("RAG_PORT", "5001"))
+		app.run(host=host, port=port)    
+
